@@ -9,24 +9,19 @@ use kobject_uevent::ActionType;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-fn is_nvidia_gpu(u: UEvent) -> bool {
+const NVIDIA_VENDOR_ID: &str = "10DE";
+const PCI_CLASS_3D: &str = "30200";
+const PCI_CLASS_DISPLAY: &str = "30000";
 
-    if u.env.contains_key("PCI_ID") == false {
+
+fn is_nvidia_gpu(event: &UEvent) -> bool {
+    if !event.env.contains_key("PCI_ID") {
         return false;
     }
-    assert!(u.env.contains_key("PCI_CLASS"));
+    let pci_id = event.env["PCI_ID"].split(':').collect::<Vec<&str>>();
+    let pci_class = &event.env["PCI_CLASS"];
 
-    let parts: Vec<&str> = u.env["PCI_ID"].split(':').collect();
-
-    if parts[0] != "10DE" {
-        return false;
-    }
-
-    if u.env["PCI_CLASS"] != "30200" && u.env["PCI_CLASS"] != "30000" {
-        return false
-    }
-
-    return true
+    pci_id[0] == NVIDIA_VENDOR_ID && (pci_class == PCI_CLASS_3D || pci_class == PCI_CLASS_DISPLAY)
 }
 
 // Function to get the current time in seconds since the UNIX epoch
@@ -38,17 +33,11 @@ fn get_current_time() -> u64 {
 }
 
 fn hotplug_device(timeout: u64) -> bool {
-      // Initialize the timestamp of the last GPU plug event
       let mut last_gpu_plug_timestamp = get_current_time();
-
-      // Wait time in seconds before considering the hot-plugging process done
-      let wait_time = timeout;
-  
-      // Schedule the execution of the check function after wait_time seconds
       loop {
-          thread::sleep(Duration::from_secs(wait_time));
+          thread::sleep(Duration::from_secs(timeout));
           
-          if check_hotplug_activity(&mut last_gpu_plug_timestamp, wait_time) {
+          if check_hotplug_activity(&mut last_gpu_plug_timestamp, timeout) {
               return true
           }
       }
@@ -58,40 +47,31 @@ fn check_hotplug_activity(last_timestamp: &mut u64, wait_time: u64) -> bool {
     let current_time = get_current_time();
     let time_diff = current_time - *last_timestamp;
 
-    // Update the last timestamp to current time for the next check
     *last_timestamp = current_time;
 
-    // If the difference is greater than or equal to wait_time, execute the target commands
-    if time_diff >= wait_time {
-        return true;
-    }
-
-    false
+    time_diff >= wait_time 
 }
+
+
 fn main() {
     let mut socket = Socket::new(NETLINK_KOBJECT_UEVENT).unwrap();
     let sa = SocketAddr::new(process::id(), 1);
-
     socket.bind(&sa).unwrap();
 
     loop {
         let n = socket.recv_from_full().unwrap();
-        let s = std::str::from_utf8(&n.0);
-        let u = UEvent::from_netlink_packet(&n.0).unwrap();
-        println!(">> {}", s.unwrap());
-        println!("{:#?}", u);
+        let uevent = UEvent::from_netlink_packet(&n.0).unwrap();
 
-        // hot-plug event 
-        if u.action == ActionType::Add {
-            if is_nvidia_gpu(u) {
-                if hotplug_device(5) {
-                    println!("hotplug activity finished, proceeding.");
-                    return
-                }
+        println!(">> {}", std::str::from_utf8(&n.0).unwrap());
+        println!("{:#?}", uevent);
+
+        if uevent.action == ActionType::Add && is_nvidia_gpu(&uevent) {
+            if hotplug_device(5) {
+                println!("Hotplug activity finished, proceeding.");
+                break;
             }
         }
-        
-
     }
 }
+
 
