@@ -1,4 +1,4 @@
-    
+
 use std::process;
 
 use netlink_sys::{protocols::NETLINK_KOBJECT_UEVENT, Socket, SocketAddr};
